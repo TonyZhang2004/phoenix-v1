@@ -151,18 +151,7 @@ pub struct Seat {
 impl ZeroCopy for Seat {}
 
 impl Seat {
-    pub fn new_init(market: Pubkey, trader: Pubkey) -> Result<Self, ProgramError> {
-        Ok(Self {
-            discriminant: get_discriminant::<Seat>()?,
-            market,
-            trader,
-            approval_status: SeatApprovalStatus::NotApproved as u64,
-            funding_key: Pubkey::default(),
-            _padding: [0; 2],
-        })
-    }
-
-    pub fn new_with_funding_key(
+    pub fn new_init(
         market: Pubkey,
         trader: Pubkey,
         funding_key: Pubkey,
