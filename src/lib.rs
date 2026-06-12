@@ -129,9 +129,12 @@ pub fn process_instruction(
         let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
         let funding_key = next_account_info(&mut accounts.iter())?;
 
-        if market.owner == &crate::id() {
-            // If the seat on the market is no longer owned by the Phoenix program, the market must have been closed
-            // We can safely reclaim all of the lamports from the seat
+        if market.data_is_empty() {
+            phoenix_log!("Market is empty, reclaiming seat's lamports");
+        } else {
+            // There are other cases that fall into this category.
+            // All of those cases involve user misconfiguation, so we return an error out of caution.
+            phoenix_log!("Market is not empty, cannot reclaim seat's lamports");
             return Err(ProgramError::IllegalOwner);
         }
 
