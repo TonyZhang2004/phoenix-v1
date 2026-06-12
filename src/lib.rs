@@ -129,7 +129,7 @@ pub fn process_instruction(
         let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
         let funding_key = next_account_info(&mut accounts.iter())?;
 
-        if market.data_is_empty() {
+        if market.data_is_empty() && market.owner == solana_program::system_program::id() {
             phoenix_log!("Market is empty, reclaiming seat's lamports");
         } else {
             // There are other cases that fall into this category.
