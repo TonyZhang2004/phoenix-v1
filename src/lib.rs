@@ -20,7 +20,7 @@ pub mod quantities;
 mod shank_structs;
 pub mod state;
 
-use crate::program::processor::*;
+use crate::program::{checkers::phoenix_checkers::SeatAccountInfo, processor::*};
 
 use borsh::BorshSerialize;
 // You need to import Pubkey prior to using the declare_id macro
@@ -121,6 +121,47 @@ pub fn process_instruction(
             ProgramError::InvalidArgument,
             "Invalid log authority",
         )?;
+        return Ok(());
+    }
+
+    if let PhoenixInstruction::DeleteSeat = instruction {
+        let market = next_account_info(&mut accounts.iter())?;
+        let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
+        let funding_key = next_account_info(&mut accounts.iter())?;
+
+        if market.owner == &crate::id() {
+            // If the seat on the market is no longer owned by the Phoenix program, the market must have been closed
+            // We can safely reclaim all of the lamports from the seat
+            return Err(ProgramError::IllegalOwner);
+        }
+
+        let (trader, payer) = {
+            let seat = seat.load_mut()?;
+            (seat.trader, seat.funding_key)
+        };
+
+        if payer == Pubkey::default() {
+            phoenix_log!("Seat's lamports will be reclaimed to the trader");
+            assert_with_msg(
+                trader == *funding_key.key,
+                ProgramError::InvalidAccountData,
+                "Funding key mismatch",
+            )?;
+        } else {
+            phoenix_log!("Seat's lamports will be reclaimed to the funder");
+            assert_with_msg(
+                payer == *funding_key.key,
+                ProgramError::InvalidAccountData,
+                "Funding key mismatch",
+            )?;
+        }
+
+        let destination_starting_lamports = funding_key.lamports();
+        **funding_key.lamports.borrow_mut() = destination_starting_lamports + seat.lamports();
+        **seat.lamports.borrow_mut() = 0;
+        seat.assign(&system_program::id());
+        seat.realloc(0, false)?;
+        phoenix_log!("Seat has been removed");
         return Ok(());
     }
 
