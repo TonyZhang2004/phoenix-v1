@@ -129,7 +129,7 @@ pub fn process_instruction(
         let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
         let funding_key = next_account_info(&mut accounts.iter())?;
 
-        if market.data_is_empty() && market.owner == solana_program::system_program::id() {
+        if market.data_is_empty() && *market.owner == solana_program::system_program::id() {
             phoenix_log!("Market is empty, reclaiming seat's lamports");
         } else {
             // There are other cases that fall into this category.
@@ -162,7 +162,7 @@ pub fn process_instruction(
         let destination_starting_lamports = funding_key.lamports();
         **funding_key.lamports.borrow_mut() = destination_starting_lamports + seat.lamports();
         **seat.lamports.borrow_mut() = 0;
-        seat.assign(&system_program::id());
+        seat.assign(&solana_program::system_program::id());
         seat.realloc(0, false)?;
         phoenix_log!("Seat has been removed");
         return Ok(());
