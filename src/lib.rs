@@ -375,7 +375,7 @@ pub fn process_instruction(
     Ok(())
 }
 
-fn delete_seat_account(&accounts: &[AccountInfo]) -> ProgramResult {
+fn delete_seat_account(accounts: &[AccountInfo]) -> ProgramResult {
     let market = next_account_info(&mut accounts.iter())?;
     let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
     let funding_key = next_account_info(&mut accounts.iter())?;
