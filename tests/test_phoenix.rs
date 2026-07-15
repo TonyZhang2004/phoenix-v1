@@ -38,6 +38,26 @@ use crate::helpers::*;
 const BOOK_SIZE: usize = 4096;
 const NUM_SEATS: usize = 8193;
 
+#[test]
+fn test_delete_seat_builder_abi() {
+    let market = Pubkey::new_unique();
+    let seat = Pubkey::new_unique();
+    let funding_key = Pubkey::new_unique();
+
+    let instruction = create_delete_seat_instruction(&market, &seat, &funding_key);
+
+    assert_eq!(instruction.program_id, phoenix::id());
+    assert_eq!(
+        instruction.accounts,
+        vec![
+            AccountMeta::new_readonly(market, false),
+            AccountMeta::new(seat, false),
+            AccountMeta::new(funding_key, false),
+        ]
+    );
+    assert_eq!(instruction.data, vec![110]);
+}
+
 pub struct PhoenixTestAccount {
     pub user: Keypair,
     pub base_ata: Pubkey,
@@ -59,7 +79,44 @@ pub struct PhoenixTestContext {
 }
 
 pub fn phoenix_test() -> ProgramTest {
-    ProgramTest::new("phoenix", phoenix::id(), None)
+    let mut program_test = ProgramTest::new(
+        "phoenix",
+        phoenix::id(),
+        Some(|first_instruction_account, invoke_context| {
+            ellipsis_client::program_test::builtin_process_instruction(
+                phoenix::process_instruction,
+                first_instruction_account,
+                invoke_context,
+            )
+        }),
+    );
+    let running_sbf =
+        std::env::var_os("BPF_OUT_DIR").is_some() || std::env::var_os("SBF_OUT_DIR").is_some();
+    if !running_sbf {
+        program_test.add_program(
+            "spl_token",
+            spl_token::id(),
+            Some(|first_instruction_account, invoke_context| {
+                ellipsis_client::program_test::builtin_process_instruction(
+                    spl_token::processor::Processor::process,
+                    first_instruction_account,
+                    invoke_context,
+                )
+            }),
+        );
+        program_test.add_program(
+            "spl_associated_token_account",
+            spl_associated_token_account::id(),
+            Some(|first_instruction_account, invoke_context| {
+                ellipsis_client::program_test::builtin_process_instruction(
+                    spl_associated_token_account::processor::process_instruction,
+                    first_instruction_account,
+                    invoke_context,
+                )
+            }),
+        );
+    }
+    program_test
 }
 
 async fn setup_account(
@@ -278,6 +335,136 @@ async fn bootstrap_with_parameters(
             default_taker: taker,
         },
     )
+}
+
+async fn prepare_empty_closed_market(
+    sdk: &SDKClient,
+    market: &Pubkey,
+    meta: &MarketMetadata,
+    admin: &Keypair,
+    default_maker: &PhoenixTestAccount,
+) {
+    sdk.client
+        .sign_send_instructions(
+            vec![
+                create_change_market_status_instruction(
+                    &admin.pubkey(),
+                    market,
+                    MarketStatus::Paused,
+                ),
+                create_change_market_status_instruction(
+                    &admin.pubkey(),
+                    market,
+                    MarketStatus::Closed,
+                ),
+                create_change_seat_status_instruction(
+                    &admin.pubkey(),
+                    market,
+                    &default_maker.user.pubkey(),
+                    SeatApprovalStatus::NotApproved,
+                ),
+                create_evict_seat_instruction(
+                    &admin.pubkey(),
+                    market,
+                    &default_maker.user.pubkey(),
+                    &meta.base_mint,
+                    &meta.quote_mint,
+                ),
+            ],
+            vec![admin],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_delete_seat_reclaims_rent_after_market_tombstone() {
+    let (
+        PhoenixTestClient {
+            ctx: _program_context,
+            mut sdk,
+            market,
+            meta,
+        },
+        PhoenixTestContext {
+            admin,
+            default_maker,
+            ..
+        },
+    ) = bootstrap_default(0).await;
+    prepare_empty_closed_market(&sdk, &market, &meta, &admin, &default_maker).await;
+
+    let maker_seat = get_seat_address(&market, &default_maker.user.pubkey()).0;
+    let seat_rent = sdk.client.get_account(&maker_seat).await.unwrap().lamports;
+
+    sdk.client
+        .sign_send_instructions(
+            vec![create_change_market_status_instruction(
+                &admin.pubkey(),
+                &market,
+                MarketStatus::Tombstoned,
+            )],
+            vec![&admin],
+        )
+        .await
+        .unwrap();
+    assert!(sdk.client.get_account(&market).await.is_err());
+
+    let fee_payer = Keypair::new();
+    airdrop(&sdk.client, &fee_payer.pubkey(), sol(1.0))
+        .await
+        .unwrap();
+    sdk.set_payer(clone_keypair(&fee_payer));
+    let funder_before = sdk
+        .client
+        .get_account(&admin.pubkey())
+        .await
+        .unwrap()
+        .lamports;
+
+    assert!(sdk
+        .client
+        .sign_send_instructions(
+            vec![create_delete_seat_instruction(
+                &market,
+                &market,
+                &admin.pubkey(),
+            )],
+            vec![],
+        )
+        .await
+        .is_err());
+    assert!(sdk.client.get_account(&maker_seat).await.is_ok());
+    assert_eq!(
+        sdk.client
+            .get_account(&admin.pubkey())
+            .await
+            .unwrap()
+            .lamports,
+        funder_before
+    );
+
+    sdk.client
+        .sign_send_instructions(
+            vec![create_delete_seat_instruction(
+                &market,
+                &maker_seat,
+                &admin.pubkey(),
+            )],
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert!(sdk.client.get_account(&maker_seat).await.is_err());
+    assert_eq!(
+        sdk.client
+            .get_account(&admin.pubkey())
+            .await
+            .unwrap()
+            .lamports
+            - funder_before,
+        seat_rent
+    );
 }
 
 async fn get_new_maker(

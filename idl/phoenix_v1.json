@@ -1524,6 +1524,34 @@
         "type": "u8",
         "value": 109
       }
+    },
+    {
+      "name": "DeleteSeat",
+      "accounts": [
+        {
+          "name": "market",
+          "isMut": false,
+          "isSigner": false,
+          "desc": "This account holds the market state"
+        },
+        {
+          "name": "seat",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "The seat account to change the funding key"
+        },
+        {
+          "name": "fundingKey",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "The new funding key"
+        }
+      ],
+      "args": [],
+      "discriminant": {
+        "type": "u8",
+        "value": 110
+      }
     }
   ],
   "types": [
@@ -1593,11 +1621,15 @@
             "type": "u64"
           },
           {
+            "name": "fundingKey",
+            "type": "publicKey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u64",
-                6
+                2
               ]
             }
           }
