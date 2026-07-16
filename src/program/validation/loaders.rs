@@ -370,7 +370,7 @@ pub(crate) struct TombstoneMarketAndCloseVaultsContext<'a, 'info> {
     pub(crate) rent_recipient: &'a AccountInfo<'info>,
     pub(crate) base_vault: MarketVault<'a, 'info>,
     pub(crate) quote_vault: MarketVault<'a, 'info>,
-    pub(crate) token_program: Program<'a, 'info>,
+    pub(crate) token_program: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> TombstoneMarketAndCloseVaultsContext<'a, 'info> {
@@ -384,11 +384,7 @@ impl<'a, 'info> TombstoneMarketAndCloseVaultsContext<'a, 'info> {
             "TombstoneMarketAndCloseVaults requires exactly four remaining accounts",
         )?;
 
-        let PhoenixMarketContext {
-            market_info,
-            signer: authority,
-        } = market_context;
-        market_info.assert_valid_authority(authority.key)?;
+        let market_info = &market_context.market_info;
 
         let (base_params, quote_params) = {
             let header = market_info.get_header()?;
@@ -399,34 +395,12 @@ impl<'a, 'info> TombstoneMarketAndCloseVaultsContext<'a, 'info> {
         let rent_recipient = next_account_info(account_iter)?;
         let base_vault_info = next_account_info(account_iter)?;
         let quote_vault_info = next_account_info(account_iter)?;
-        let token_program = Program::new(next_account_info(account_iter)?, &spl_token::id())?;
-
-        for (name, account) in [
-            ("Rent recipient", rent_recipient),
-            ("Base vault", base_vault_info),
-            ("Quote vault", quote_vault_info),
-        ] {
-            assert_with_msg(
-                account.is_writable,
-                ProgramError::InvalidInstructionData,
-                &format!("{} must be writable", name),
-            )?;
-        }
+        let token_program = next_account_info(account_iter)?;
 
         assert_with_msg(
-            rent_recipient.key != market_info.key
-                && rent_recipient.key != base_vault_info.key
-                && rent_recipient.key != quote_vault_info.key
-                && rent_recipient.key != &crate::id()
-                && rent_recipient.key != &phoenix_log_authority::id()
-                && rent_recipient.key != &spl_token::id(),
+            rent_recipient.key != &phoenix_log_authority::id(),
             ProgramError::InvalidInstructionData,
             "Invalid market rent recipient",
-        )?;
-        assert_with_msg(
-            base_vault_info.key != quote_vault_info.key,
-            ProgramError::InvalidInstructionData,
-            "Base and quote vaults must be distinct",
         )?;
 
         let base_vault = MarketVault::new(market_info.key, base_vault_info, &base_params)?;

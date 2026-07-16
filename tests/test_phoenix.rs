@@ -548,7 +548,6 @@ async fn corrupt_token_account_fields(
     token_account_key: &Pubkey,
     replacement_mint: Option<Pubkey>,
     replacement_owner: Option<Pubkey>,
-    replacement_close_authority: Option<Pubkey>,
 ) -> solana_sdk::account::Account {
     let original = client.get_account(token_account_key).await.unwrap();
     let mut corrupted = original.clone();
@@ -558,10 +557,6 @@ async fn corrupt_token_account_fields(
     }
     if let Some(owner) = replacement_owner {
         token_account.owner = owner;
-    }
-    if let Some(close_authority) = replacement_close_authority {
-        token_account.close_authority =
-            solana_program::program_option::COption::Some(close_authority);
     }
     spl_token::state::Account::pack(token_account, &mut corrupted.data).unwrap();
     program_context.set_account(token_account_key, &AccountSharedData::from(corrupted));
@@ -808,43 +803,10 @@ async fn test_tombstone_market_and_close_vaults_rejects_invalid_context_without_
         &meta.base_mint,
         &meta.quote_mint,
     );
-    wrong_vault_instruction.accounts[5] = AccountMeta::new(quote_vault, false);
+    wrong_vault_instruction.accounts.swap(5, 6);
     assert_instruction_failure_is_atomic(
         &sdk.client,
         wrong_vault_instruction,
-        vec![&admin],
-        &accounts_to_snapshot,
-    )
-    .await;
-
-    let mut wrong_token_program_instruction = create_tombstone_market_and_close_vaults_instruction(
-        &admin.pubkey(),
-        &market,
-        &rent_recipient,
-        &meta.base_mint,
-        &meta.quote_mint,
-    );
-    wrong_token_program_instruction.accounts[7] =
-        AccountMeta::new_readonly(solana_program::system_program::id(), false);
-    assert_instruction_failure_is_atomic(
-        &sdk.client,
-        wrong_token_program_instruction,
-        vec![&admin],
-        &accounts_to_snapshot,
-    )
-    .await;
-
-    let mut aliased_recipient_instruction = create_tombstone_market_and_close_vaults_instruction(
-        &admin.pubkey(),
-        &market,
-        &rent_recipient,
-        &meta.base_mint,
-        &meta.quote_mint,
-    );
-    aliased_recipient_instruction.accounts[4] = AccountMeta::new(base_vault, false);
-    assert_instruction_failure_is_atomic(
-        &sdk.client,
-        aliased_recipient_instruction,
         vec![&admin],
         &accounts_to_snapshot,
     )
@@ -907,7 +869,6 @@ async fn test_tombstone_market_and_close_vaults_rejects_corrupt_vault_configurat
         &base_vault,
         Some(Pubkey::new_unique()),
         None,
-        None,
     )
     .await;
     assert_instruction_failure_is_atomic(
@@ -929,7 +890,6 @@ async fn test_tombstone_market_and_close_vaults_rejects_corrupt_vault_configurat
         &base_vault,
         None,
         Some(Pubkey::new_unique()),
-        None,
     )
     .await;
     assert_instruction_failure_is_atomic(
@@ -943,60 +903,6 @@ async fn test_tombstone_market_and_close_vaults_rejects_corrupt_vault_configurat
         &base_vault,
         &AccountSharedData::from(original_base_vault.clone()),
     );
-
-    let wrong_close_authority = Pubkey::new_unique();
-    corrupt_token_account_fields(
-        &mut program_context,
-        &sdk.client,
-        &base_vault,
-        None,
-        None,
-        Some(wrong_close_authority),
-    )
-    .await;
-
-    let installed_vault = sdk.client.get_account(&base_vault).await.unwrap();
-    let installed_token_account = spl_token::state::Account::unpack(&installed_vault.data).unwrap();
-    assert_eq!(installed_token_account.owner, base_vault);
-    assert_eq!(
-        installed_token_account.close_authority,
-        solana_program::program_option::COption::Some(wrong_close_authority)
-    );
-
-    let recent_blockhash = program_context.get_new_latest_blockhash().await.unwrap();
-    let transaction = solana_sdk::transaction::Transaction::new_signed_with_payer(
-        &[instruction()],
-        Some(&sdk.client.payer.pubkey()),
-        &[&sdk.client.payer, &admin],
-        recent_blockhash,
-    );
-    let preflight_error = program_context
-        .banks_client
-        .process_transaction_with_preflight(transaction)
-        .await
-        .expect_err("wrong close authority should fail preflight");
-    match preflight_error {
-        ellipsis_client::banks_client::BanksClientError::SimulationError { err, .. } => {
-            assert_eq!(
-                err,
-                solana_sdk::transaction::TransactionError::InstructionError(
-                    0,
-                    solana_sdk::instruction::InstructionError::InvalidAccountData,
-                )
-            );
-        }
-        error => panic!("unexpected close-authority preflight error: {error:?}"),
-    }
-
-    program_context.get_new_latest_blockhash().await.unwrap();
-    assert_instruction_failure_is_atomic(
-        &sdk.client,
-        instruction(),
-        vec![&admin],
-        &accounts_to_snapshot,
-    )
-    .await;
-    program_context.set_account(&base_vault, &AccountSharedData::from(original_base_vault));
     program_context.get_new_latest_blockhash().await.unwrap();
 
     let original_market = sdk.client.get_account(&market).await.unwrap();

@@ -94,7 +94,7 @@ pub(crate) fn close_market_vault<'a, 'info>(
 ) -> ProgramResult {
     invoke_signed(
         &spl_token::instruction::close_account(
-            token_program.key,
+            &spl_token::id(),
             vault.key,
             rent_recipient.key,
             vault.key,

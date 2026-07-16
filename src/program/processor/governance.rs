@@ -169,7 +169,7 @@ pub(crate) fn process_tombstone_market_and_close_vaults<'a, 'info>(
         market_info.key,
         &ctx.base_vault.mint_key,
         ctx.base_vault.bump,
-        ctx.token_program.as_ref(),
+        ctx.token_program,
         &ctx.base_vault.account,
         ctx.rent_recipient,
     )?;
@@ -177,7 +177,7 @@ pub(crate) fn process_tombstone_market_and_close_vaults<'a, 'info>(
         market_info.key,
         &ctx.quote_vault.mint_key,
         ctx.quote_vault.bump,
-        ctx.token_program.as_ref(),
+        ctx.token_program,
         &ctx.quote_vault.account,
         ctx.rent_recipient,
     )?;
