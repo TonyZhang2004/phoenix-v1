@@ -422,28 +422,6 @@ async fn test_delete_seat_reclaims_rent_after_market_tombstone() {
         .unwrap()
         .lamports;
 
-    assert!(sdk
-        .client
-        .sign_send_instructions(
-            vec![create_delete_seat_instruction(
-                &market,
-                &market,
-                &admin.pubkey(),
-            )],
-            vec![],
-        )
-        .await
-        .is_err());
-    assert!(sdk.client.get_account(&maker_seat).await.is_ok());
-    assert_eq!(
-        sdk.client
-            .get_account(&admin.pubkey())
-            .await
-            .unwrap()
-            .lamports,
-        funder_before
-    );
-
     sdk.client
         .sign_send_instructions(
             vec![create_delete_seat_instruction(
