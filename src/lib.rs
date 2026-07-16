@@ -334,6 +334,15 @@ pub fn process_instruction(
             phoenix_log!("PhoenixInstruction::ChangeMarketStatus");
             governance::process_change_market_status(program_id, &market_context, accounts, data)?
         }
+        PhoenixInstruction::TombstoneMarketAndCloseVaults => {
+            phoenix_log!("PhoenixInstruction::TombstoneMarketAndCloseVaults");
+            governance::process_tombstone_market_and_close_vaults(
+                program_id,
+                &market_context,
+                accounts,
+                data,
+            )?
+        }
         PhoenixInstruction::RequestSeatAuthorized => {
             phoenix_log!("PhoenixInstruction::RequestSeatAuthorized");
             manage_seat::process_request_seat_authorized(

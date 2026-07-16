@@ -6,8 +6,10 @@ use super::{
 };
 use crate::{
     program::{
-        error::assert_with_msg, load_with_dispatch_mut, status::MarketStatus,
+        checkers::phoenix_checkers::MarketAccountInfo, error::assert_with_msg,
+        load_with_dispatch_mut, status::MarketStatus, token_utils::close_market_vault,
         AuthorizedActionContext, ChangeMarketStatusContext, MarketHeader, PhoenixMarketContext,
+        TombstoneMarketAndCloseVaultsContext,
     },
     quantities::QuoteLots,
     state::{markets::MarketEvent, Side},
@@ -83,7 +85,7 @@ pub(crate) fn process_claim_authority<'a, 'info>(
     Ok(())
 }
 
-/// The authority can be changed to a successor, but the successor must explicitly claim the 
+/// The authority can be changed to a successor, but the successor must explicitly claim the
 /// authority from the previous market authority
 pub(crate) fn process_name_successor<'a, 'info>(
     _program_id: &Pubkey,
@@ -124,47 +126,13 @@ pub(crate) fn process_change_market_status<'a, 'info>(
     match next_state {
         // When the market is tombstoned, its data is fully removed.
         MarketStatus::Tombstoned => {
-            // The book must be empty
-            {
-                let market_bytes =
-                    &mut market_info.try_borrow_mut_data()?[size_of::<MarketHeader>()..];
-                let market = load_with_dispatch_mut(&market_info.size_params, market_bytes)?.inner;
-                assert_with_msg(
-                    market.get_book(Side::Bid).is_empty() && market.get_book(Side::Ask).is_empty(),
-                    ProgramError::InvalidAccountData,
-                    &format!(
-                        "Invalid market status, must have no open orders, found {} bids and {} asks",
-                        market.get_book(Side::Bid).len(),
-                        market.get_book(Side::Ask).len()
-                    ),
-                )?;
-                assert_with_msg(
-                    market.get_uncollected_fee_amount() == QuoteLots::ZERO,
-                    ProgramError::InvalidAccountData,
-                    "Invalid market status, must have no uncollected fees",
-                )?;
-                // All traders should be removed (all funds withdrawn)
-                assert_with_msg(
-                    market.get_registered_traders().is_empty(),
-                    ProgramError::InvalidAccountData,
-                    &format!(
-                        "Invalid market status, must have no traders, found {}",
-                        market.get_registered_traders().len()
-                    ),
-                )?;
-            }
+            validate_tombstone_preconditions(market_info)?;
             // The market lamports are either transferred to the receiver or to the authority
             let receiver = match receiver_option {
                 Some(r) => r,
                 None => authority.as_ref(),
             };
-            let destination_starting_lamports = receiver.lamports();
-            **receiver.lamports.borrow_mut() =
-                destination_starting_lamports + market_info.lamports();
-            **market_info.lamports.borrow_mut() = 0;
-            market_info.assign(&system_program::id());
-            market_info.realloc(0, false)?;
-            phoenix_log!("Market has been removed");
+            close_market_account(market_info, receiver)?;
         }
         // In all other cases, we simply update the status of the market
         _ => {
@@ -172,5 +140,98 @@ pub(crate) fn process_change_market_status<'a, 'info>(
             phoenix_log!("Market status changed to {}", next_state);
         }
     }
+    Ok(())
+}
+
+pub(crate) fn process_tombstone_market_and_close_vaults<'a, 'info>(
+    _program_id: &Pubkey,
+    market_context: &PhoenixMarketContext<'a, 'info>,
+    accounts: &'a [AccountInfo<'info>],
+    data: &[u8],
+) -> ProgramResult {
+    assert_with_msg(
+        data.is_empty(),
+        ProgramError::InvalidInstructionData,
+        "TombstoneMarketAndCloseVaults does not accept instruction data",
+    )?;
+
+    let PhoenixMarketContext {
+        market_info,
+        signer: authority,
+    } = market_context;
+    market_info.assert_valid_authority(authority.key)?;
+    let status = market_info.get_header()?.status;
+    MarketStatus::from(status).assert_valid_state_transition(&MarketStatus::Tombstoned)?;
+    validate_tombstone_preconditions(market_info)?;
+
+    let ctx = TombstoneMarketAndCloseVaultsContext::load(market_context, accounts)?;
+    close_market_vault(
+        market_info.key,
+        &ctx.base_vault.mint_key,
+        ctx.base_vault.bump,
+        ctx.token_program.as_ref(),
+        &ctx.base_vault.account,
+        ctx.rent_recipient,
+    )?;
+    close_market_vault(
+        market_info.key,
+        &ctx.quote_vault.mint_key,
+        ctx.quote_vault.bump,
+        ctx.token_program.as_ref(),
+        &ctx.quote_vault.account,
+        ctx.rent_recipient,
+    )?;
+    close_market_account(market_info, ctx.rent_recipient)
+}
+
+fn validate_tombstone_preconditions(market_info: &MarketAccountInfo<'_, '_>) -> ProgramResult {
+    let mut market_data = market_info.try_borrow_mut_data()?;
+    let market = load_with_dispatch_mut(
+        &market_info.size_params,
+        &mut market_data[size_of::<MarketHeader>()..],
+    )?
+    .inner;
+    assert_with_msg(
+        market.get_book(Side::Bid).is_empty() && market.get_book(Side::Ask).is_empty(),
+        ProgramError::InvalidAccountData,
+        &format!(
+            "Invalid market status, must have no open orders, found {} bids and {} asks",
+            market.get_book(Side::Bid).len(),
+            market.get_book(Side::Ask).len()
+        ),
+    )?;
+    assert_with_msg(
+        market.get_uncollected_fee_amount() == QuoteLots::ZERO,
+        ProgramError::InvalidAccountData,
+        "Invalid market status, must have no uncollected fees",
+    )?;
+    assert_with_msg(
+        market.get_registered_traders().is_empty(),
+        ProgramError::InvalidAccountData,
+        &format!(
+            "Invalid market status, must have no traders, found {}",
+            market.get_registered_traders().len()
+        ),
+    )
+}
+
+fn close_market_account(
+    market_info: &MarketAccountInfo<'_, '_>,
+    rent_recipient: &AccountInfo<'_>,
+) -> ProgramResult {
+    assert_with_msg(
+        rent_recipient.is_writable && rent_recipient.key != market_info.key,
+        ProgramError::InvalidInstructionData,
+        "Invalid market rent recipient",
+    )?;
+    let recipient_lamports = rent_recipient
+        .lamports()
+        .checked_add(market_info.lamports())
+        .ok_or(ProgramError::InvalidAccountData)?;
+    **rent_recipient.lamports.borrow_mut() = recipient_lamports;
+    **market_info.lamports.borrow_mut() = 0;
+    market_info.assign(&system_program::id());
+    market_info.realloc(0, false)?;
+    phoenix_log!("Market has been removed");
     Ok(())
 }

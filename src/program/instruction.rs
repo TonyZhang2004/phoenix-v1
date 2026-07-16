@@ -278,6 +278,16 @@ pub enum PhoenixInstruction {
     #[account(1, writable, name = "seat", desc = "The seat account to change the funding key")]
     #[account(2, writable, name = "funding_key", desc = "The new funding key")]
     DeleteSeat = 110,
+
+    #[account(0, name = "phoenix_program", desc = "Phoenix program")]
+    #[account(1, name = "log_authority", desc = "Phoenix log authority")]
+    #[account(2, writable, name = "market", desc = "This account holds the market state")]
+    #[account(3, signer, name = "market_authority", desc = "The market_authority account must sign to tombstone the market")]
+    #[account(4, writable, name = "rent_recipient", desc = "Recipient of the market and vault account rent")]
+    #[account(5, writable, name = "base_vault", desc = "Base vault PDA, seeds are [b'vault', market_address, base_mint_address]")]
+    #[account(6, writable, name = "quote_vault", desc = "Quote vault PDA, seeds are [b'vault', market_address, quote_mint_address]")]
+    #[account(7, name = "token_program", desc = "Token program")]
+    TombstoneMarketAndCloseVaults = 111,
 }
 
 impl PhoenixInstruction {
@@ -288,7 +298,7 @@ impl PhoenixInstruction {
 
 #[test]
 fn test_instruction_serialization() {
-    for i in 0..=110 {
+    for i in 0..=111 {
         let instruction = match PhoenixInstruction::try_from(i) {
             Ok(j) => j,
             Err(_) => {

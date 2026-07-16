@@ -8,13 +8,16 @@
 //! The loader structs are used to validate the accounts passed into the program based on the
 //! current instruction.
 
+pub use super::checkers::vault_checkers::get_vault_address;
 use super::checkers::{
     phoenix_checkers::{MarketAccountInfo, SeatAccountInfo},
+    vault_checkers::MarketVault,
     MintAccountInfo, TokenAccountInfo, PDA,
 };
 use crate::{
     phoenix_log_authority,
     program::{
+        assert_with_msg,
         validation::checkers::{EmptyAccount, Program, Signer},
         MarketHeader, TokenParams,
     },
@@ -27,10 +30,6 @@ use solana_program::{
     system_program,
 };
 use static_assertions::const_assert_eq;
-
-pub fn get_vault_address(market: &Pubkey, mint: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"vault", market.as_ref(), mint.as_ref()], &crate::ID)
-}
 
 pub fn get_seat_address(market: &Pubkey, trader: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"seat", market.as_ref(), trader.as_ref()], &crate::ID)
@@ -364,6 +363,81 @@ impl<'a, 'info> ChangeMarketStatusContext<'a, 'info> {
             receiver: next_account_info(account_iter).ok(),
         };
         Ok(ctx)
+    }
+}
+
+pub(crate) struct TombstoneMarketAndCloseVaultsContext<'a, 'info> {
+    pub(crate) rent_recipient: &'a AccountInfo<'info>,
+    pub(crate) base_vault: MarketVault<'a, 'info>,
+    pub(crate) quote_vault: MarketVault<'a, 'info>,
+    pub(crate) token_program: Program<'a, 'info>,
+}
+
+impl<'a, 'info> TombstoneMarketAndCloseVaultsContext<'a, 'info> {
+    pub(crate) fn load(
+        market_context: &PhoenixMarketContext<'a, 'info>,
+        accounts: &'a [AccountInfo<'info>],
+    ) -> Result<Self, ProgramError> {
+        assert_with_msg(
+            accounts.len() == 4,
+            ProgramError::InvalidInstructionData,
+            "TombstoneMarketAndCloseVaults requires exactly four remaining accounts",
+        )?;
+
+        let PhoenixMarketContext {
+            market_info,
+            signer: authority,
+        } = market_context;
+        market_info.assert_valid_authority(authority.key)?;
+
+        let (base_params, quote_params) = {
+            let header = market_info.get_header()?;
+            (header.base_params, header.quote_params)
+        };
+
+        let account_iter = &mut accounts.iter();
+        let rent_recipient = next_account_info(account_iter)?;
+        let base_vault_info = next_account_info(account_iter)?;
+        let quote_vault_info = next_account_info(account_iter)?;
+        let token_program = Program::new(next_account_info(account_iter)?, &spl_token::id())?;
+
+        for (name, account) in [
+            ("Rent recipient", rent_recipient),
+            ("Base vault", base_vault_info),
+            ("Quote vault", quote_vault_info),
+        ] {
+            assert_with_msg(
+                account.is_writable,
+                ProgramError::InvalidInstructionData,
+                &format!("{} must be writable", name),
+            )?;
+        }
+
+        assert_with_msg(
+            rent_recipient.key != market_info.key
+                && rent_recipient.key != base_vault_info.key
+                && rent_recipient.key != quote_vault_info.key
+                && rent_recipient.key != &crate::id()
+                && rent_recipient.key != &phoenix_log_authority::id()
+                && rent_recipient.key != &spl_token::id(),
+            ProgramError::InvalidInstructionData,
+            "Invalid market rent recipient",
+        )?;
+        assert_with_msg(
+            base_vault_info.key != quote_vault_info.key,
+            ProgramError::InvalidInstructionData,
+            "Base and quote vaults must be distinct",
+        )?;
+
+        let base_vault = MarketVault::new(market_info.key, base_vault_info, &base_params)?;
+        let quote_vault = MarketVault::new(market_info.key, quote_vault_info, &quote_params)?;
+
+        Ok(Self {
+            rent_recipient,
+            base_vault,
+            quote_vault,
+            token_program,
+        })
     }
 }
 
