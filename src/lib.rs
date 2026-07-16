@@ -376,9 +376,16 @@ pub fn process_instruction(
 }
 
 fn delete_seat_account(accounts: &[AccountInfo]) -> ProgramResult {
-    let market = next_account_info(&mut accounts.iter())?;
-    let seat = SeatAccountInfo::new(next_account_info(&mut accounts.iter())?, market.key)?;
-    let funding_key = next_account_info(&mut accounts.iter())?;
+    assert_with_msg(
+        accounts.len() == 3,
+        ProgramError::InvalidInstructionData,
+        "DeleteSeat requires exactly three accounts",
+    )?;
+    let account_iter = &mut accounts.iter();
+    let market = next_account_info(account_iter)?;
+    let seat_info = next_account_info(account_iter)?;
+    let funding_key = next_account_info(account_iter)?;
+    let seat = SeatAccountInfo::new(seat_info, market.key)?;
 
     if market.data_is_empty() && *market.owner == solana_program::system_program::id() {
         phoenix_log!("Market is empty, reclaiming seat's lamports");
@@ -410,8 +417,11 @@ fn delete_seat_account(accounts: &[AccountInfo]) -> ProgramResult {
         )?;
     }
 
-    let destination_starting_lamports = funding_key.lamports();
-    **funding_key.lamports.borrow_mut() = destination_starting_lamports + seat.lamports();
+    let destination_lamports = funding_key
+        .lamports()
+        .checked_add(seat.lamports())
+        .ok_or(ProgramError::InvalidAccountData)?;
+    **funding_key.lamports.borrow_mut() = destination_lamports;
     **seat.lamports.borrow_mut() = 0;
     seat.assign(&solana_program::system_program::id());
     seat.realloc(0, false)?;
