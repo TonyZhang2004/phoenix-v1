@@ -29,7 +29,7 @@ use solana_program::{program::set_return_data, pubkey::Pubkey};
 
 use program::{
     assert_with_msg, event_recorder::EventRecorder, PhoenixInstruction, PhoenixLogContext,
-    PhoenixMarketContext, Seat,
+    PhoenixMarketContext,
 };
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
@@ -37,7 +37,6 @@ use solana_program::{
     program_error::ProgramError,
 };
 use state::markets::MarketEvent;
-use std::mem::size_of;
 
 #[cfg(not(feature = "no-entrypoint"))]
 use solana_security_txt::security_txt;
@@ -386,15 +385,6 @@ fn delete_seat_account(accounts: &[AccountInfo]) -> ProgramResult {
     let market = next_account_info(account_iter)?;
     let seat_info = next_account_info(account_iter)?;
     let funding_key = next_account_info(account_iter)?;
-    assert_with_msg(
-        seat_info.is_writable
-            && funding_key.is_writable
-            && seat_info.key != funding_key.key
-            && seat_info.owner == &crate::id()
-            && seat_info.data_len() == size_of::<Seat>(),
-        ProgramError::InvalidAccountData,
-        "Invalid seat or funding account",
-    )?;
     let seat = SeatAccountInfo::new(seat_info, market.key)?;
 
     if market.data_is_empty() && *market.owner == solana_program::system_program::id() {
