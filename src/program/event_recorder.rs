@@ -195,9 +195,13 @@ impl<'info> EventRecorder<'info> {
         }
         if market_info.data_is_empty() {
             assert_with_msg(
-                self.phoenix_instruction == PhoenixInstruction::ChangeMarketStatus,
+                matches!(
+                    self.phoenix_instruction,
+                    PhoenixInstruction::ChangeMarketStatus
+                        | PhoenixInstruction::TombstoneMarketAndCloseVaults
+                ),
                 ProgramError::InvalidInstructionData,
-                "The only instruction that can be used to delete a market is ChangeMarketStatus",
+                "Invalid instruction used to delete a market",
             )?;
         } else {
             market_info.get_header_mut()?.increment_sequence_number();

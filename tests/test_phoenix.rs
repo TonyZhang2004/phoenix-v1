@@ -18,7 +18,9 @@ use phoenix_sdk::sdk_client::Reduce;
 use sokoban::ZeroCopy;
 use solana_program::instruction::AccountMeta;
 use solana_program::instruction::Instruction;
+use solana_program::program_pack::Pack;
 use solana_program::system_instruction::{self, transfer};
+use solana_sdk::account::AccountSharedData;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use spl_associated_token_account::get_associated_token_address;
 use std::collections::HashSet;
@@ -56,6 +58,58 @@ fn test_delete_seat_builder_abi() {
         ]
     );
     assert_eq!(instruction.data, vec![110]);
+}
+
+#[test]
+fn test_tombstone_market_and_close_vaults_builder_abi() {
+    let authority = Pubkey::new_unique();
+    let market = Pubkey::new_unique();
+    let rent_recipient = Pubkey::new_unique();
+    let base_mint = Pubkey::new_unique();
+    let quote_mint = Pubkey::new_unique();
+    let base_vault = get_vault_address(&market, &base_mint).0;
+    let quote_vault = get_vault_address(&market, &quote_mint).0;
+
+    let instruction = create_tombstone_market_and_close_vaults_instruction(
+        &authority,
+        &market,
+        &rent_recipient,
+        &base_mint,
+        &quote_mint,
+    );
+
+    assert_eq!(instruction.program_id, phoenix::id());
+    assert_eq!(
+        instruction.accounts,
+        vec![
+            AccountMeta::new_readonly(phoenix::id(), false),
+            AccountMeta::new_readonly(phoenix_log_authority::id(), false),
+            AccountMeta::new(market, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(rent_recipient, false),
+            AccountMeta::new(base_vault, false),
+            AccountMeta::new(quote_vault, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ]
+    );
+    assert_eq!(instruction.data, vec![111]);
+}
+
+#[test]
+fn test_get_vault_address_legacy_exports() {
+    let market = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let expected =
+        Pubkey::find_program_address(&[b"vault", market.as_ref(), mint.as_ref()], &phoenix::id());
+
+    assert_eq!(
+        phoenix::program::get_vault_address(&market, &mint),
+        expected
+    );
+    assert_eq!(
+        phoenix::program::loaders::get_vault_address(&market, &mint),
+        expected
+    );
 }
 
 pub struct PhoenixTestAccount {
@@ -443,6 +497,427 @@ async fn test_delete_seat_reclaims_rent_after_market_tombstone() {
             - funder_before,
         seat_rent
     );
+}
+
+async fn assert_instruction_failure_is_atomic(
+    client: &EllipsisClient,
+    instruction: Instruction,
+    signers: Vec<&Keypair>,
+    account_keys: &[Pubkey],
+) {
+    let mut before = Vec::with_capacity(account_keys.len());
+    for key in account_keys {
+        before.push(client.get_account(key).await.unwrap());
+    }
+
+    client
+        .sign_send_instructions(vec![instruction], signers)
+        .await
+        .expect_err("instruction should fail");
+
+    for (key, expected) in account_keys.iter().zip(before) {
+        assert_eq!(client.get_account(key).await.unwrap(), expected);
+    }
+}
+
+async fn corrupt_token_account_fields(
+    program_context: &mut ProgramTestContext,
+    client: &EllipsisClient,
+    token_account_key: &Pubkey,
+    replacement_mint: Option<Pubkey>,
+    replacement_owner: Option<Pubkey>,
+) -> solana_sdk::account::Account {
+    let original = client.get_account(token_account_key).await.unwrap();
+    let mut corrupted = original.clone();
+    let mut token_account = spl_token::state::Account::unpack(&corrupted.data).unwrap();
+    if let Some(mint) = replacement_mint {
+        token_account.mint = mint;
+    }
+    if let Some(owner) = replacement_owner {
+        token_account.owner = owner;
+    }
+    spl_token::state::Account::pack(token_account, &mut corrupted.data).unwrap();
+    program_context.set_account(token_account_key, &AccountSharedData::from(corrupted));
+    original
+}
+
+#[tokio::test]
+async fn test_tombstone_market_and_close_vaults_reclaims_all_rent() {
+    let (
+        PhoenixTestClient {
+            ctx: _program_context,
+            sdk,
+            market,
+            meta,
+        },
+        PhoenixTestContext {
+            admin,
+            default_maker,
+            ..
+        },
+    ) = bootstrap_default(0).await;
+    prepare_empty_closed_market(&sdk, &market, &meta, &admin, &default_maker).await;
+
+    let rent_recipient = Pubkey::new_unique();
+    airdrop(&sdk.client, &rent_recipient, sol(1.0))
+        .await
+        .unwrap();
+    let base_vault = get_vault_address(&market, &meta.base_mint).0;
+    let quote_vault = get_vault_address(&market, &meta.quote_mint).0;
+    let market_rent = sdk.client.get_account(&market).await.unwrap().lamports;
+    let base_vault_rent = sdk.client.get_account(&base_vault).await.unwrap().lamports;
+    let quote_vault_rent = sdk.client.get_account(&quote_vault).await.unwrap().lamports;
+    let recipient_before = sdk
+        .client
+        .get_account(&rent_recipient)
+        .await
+        .unwrap()
+        .lamports;
+
+    sdk.client
+        .sign_send_instructions(
+            vec![create_tombstone_market_and_close_vaults_instruction(
+                &admin.pubkey(),
+                &market,
+                &rent_recipient,
+                &meta.base_mint,
+                &meta.quote_mint,
+            )],
+            vec![&admin],
+        )
+        .await
+        .unwrap();
+
+    assert!(sdk.client.get_account(&market).await.is_err());
+    assert!(sdk.client.get_account(&base_vault).await.is_err());
+    assert!(sdk.client.get_account(&quote_vault).await.is_err());
+    let recipient_after = sdk
+        .client
+        .get_account(&rent_recipient)
+        .await
+        .unwrap()
+        .lamports;
+    assert_eq!(
+        recipient_after - recipient_before,
+        market_rent + base_vault_rent + quote_vault_rent
+    );
+    assert!(sdk.client.get_account(&meta.base_mint).await.is_ok());
+    assert!(sdk.client.get_account(&meta.quote_mint).await.is_ok());
+}
+
+async fn assert_nonzero_vault_blocks_tombstone(dust_base_vault: bool) {
+    let (
+        PhoenixTestClient {
+            ctx: _program_context,
+            sdk,
+            market,
+            meta,
+        },
+        PhoenixTestContext {
+            admin,
+            default_maker,
+            ..
+        },
+    ) = bootstrap_default(0).await;
+    prepare_empty_closed_market(&sdk, &market, &meta, &admin, &default_maker).await;
+
+    let rent_recipient = Pubkey::new_unique();
+    airdrop(&sdk.client, &rent_recipient, sol(1.0))
+        .await
+        .unwrap();
+    let base_vault = get_vault_address(&market, &meta.base_mint).0;
+    let quote_vault = get_vault_address(&market, &meta.quote_mint).0;
+    let (source_account, destination_vault) = if dust_base_vault {
+        (default_maker.base_ata, base_vault)
+    } else {
+        (default_maker.quote_ata, quote_vault)
+    };
+    let dust_vault = spl_token::instruction::transfer(
+        &spl_token::id(),
+        &source_account,
+        &destination_vault,
+        &default_maker.user.pubkey(),
+        &[],
+        1,
+    )
+    .unwrap();
+    sdk.client
+        .sign_send_instructions(vec![dust_vault], vec![&default_maker.user])
+        .await
+        .unwrap();
+    assert_eq!(get_token_balance(&sdk.client, destination_vault).await, 1);
+
+    let market_before = sdk.client.get_account(&market).await.unwrap();
+    let base_vault_before = sdk.client.get_account(&base_vault).await.unwrap();
+    let quote_vault_before = sdk.client.get_account(&quote_vault).await.unwrap();
+    let recipient_before = sdk.client.get_account(&rent_recipient).await.unwrap();
+
+    let result = sdk
+        .client
+        .sign_send_instructions(
+            vec![create_tombstone_market_and_close_vaults_instruction(
+                &admin.pubkey(),
+                &market,
+                &rent_recipient,
+                &meta.base_mint,
+                &meta.quote_mint,
+            )],
+            vec![&admin],
+        )
+        .await;
+    assert!(result.is_err());
+
+    assert_eq!(
+        sdk.client.get_account(&market).await.unwrap(),
+        market_before
+    );
+    assert_eq!(
+        sdk.client.get_account(&base_vault).await.unwrap(),
+        base_vault_before
+    );
+    assert_eq!(
+        sdk.client.get_account(&quote_vault).await.unwrap(),
+        quote_vault_before
+    );
+    assert_eq!(
+        sdk.client.get_account(&rent_recipient).await.unwrap(),
+        recipient_before
+    );
+}
+
+#[tokio::test]
+async fn test_tombstone_market_and_close_vaults_rolls_back_when_base_vault_is_nonzero() {
+    assert_nonzero_vault_blocks_tombstone(true).await;
+}
+
+#[tokio::test]
+async fn test_tombstone_market_and_close_vaults_rolls_back_when_quote_vault_is_nonzero() {
+    assert_nonzero_vault_blocks_tombstone(false).await;
+}
+
+#[tokio::test]
+async fn test_tombstone_market_and_close_vaults_rejects_invalid_context_without_mutation() {
+    let (
+        PhoenixTestClient {
+            ctx: _program_context,
+            mut sdk,
+            market,
+            meta,
+        },
+        PhoenixTestContext {
+            admin,
+            default_maker,
+            ..
+        },
+    ) = bootstrap_default(0).await;
+
+    let rent_recipient = Pubkey::new_unique();
+    airdrop(&sdk.client, &rent_recipient, sol(1.0))
+        .await
+        .unwrap();
+    let base_vault = get_vault_address(&market, &meta.base_mint).0;
+    let quote_vault = get_vault_address(&market, &meta.quote_mint).0;
+    let accounts_to_snapshot = [market, base_vault, quote_vault, rent_recipient];
+
+    let active_market_instruction = create_tombstone_market_and_close_vaults_instruction(
+        &admin.pubkey(),
+        &market,
+        &rent_recipient,
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        active_market_instruction,
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+
+    prepare_empty_closed_market(&sdk, &market, &meta, &admin, &default_maker).await;
+
+    let attacker = Keypair::new();
+    airdrop(&sdk.client, &attacker.pubkey(), sol(1.0))
+        .await
+        .unwrap();
+    let wrong_authority_instruction = create_tombstone_market_and_close_vaults_instruction(
+        &attacker.pubkey(),
+        &market,
+        &rent_recipient,
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        wrong_authority_instruction,
+        vec![&attacker],
+        &accounts_to_snapshot,
+    )
+    .await;
+
+    let mut missing_authority_signature = create_tombstone_market_and_close_vaults_instruction(
+        &admin.pubkey(),
+        &market,
+        &rent_recipient,
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
+    missing_authority_signature.accounts[3] = AccountMeta::new_readonly(admin.pubkey(), false);
+    let original_payer = sdk.client.payer.pubkey();
+    sdk.set_payer(clone_keypair(&attacker));
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        missing_authority_signature,
+        vec![],
+        &accounts_to_snapshot,
+    )
+    .await;
+    sdk.client.set_payer(&original_payer).unwrap();
+
+    let mut wrong_vault_instruction = create_tombstone_market_and_close_vaults_instruction(
+        &admin.pubkey(),
+        &market,
+        &rent_recipient,
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
+    wrong_vault_instruction.accounts.swap(5, 6);
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        wrong_vault_instruction,
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+
+    let mut nonempty_data_instruction = create_tombstone_market_and_close_vaults_instruction(
+        &admin.pubkey(),
+        &market,
+        &rent_recipient,
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
+    nonempty_data_instruction.data.push(0);
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        nonempty_data_instruction,
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_tombstone_market_and_close_vaults_rejects_corrupt_vault_configuration() {
+    let (
+        PhoenixTestClient {
+            ctx: mut program_context,
+            sdk,
+            market,
+            meta,
+        },
+        PhoenixTestContext {
+            admin,
+            default_maker,
+            ..
+        },
+    ) = bootstrap_default(0).await;
+    prepare_empty_closed_market(&sdk, &market, &meta, &admin, &default_maker).await;
+
+    let rent_recipient = Pubkey::new_unique();
+    airdrop(&sdk.client, &rent_recipient, sol(1.0))
+        .await
+        .unwrap();
+    let base_vault = get_vault_address(&market, &meta.base_mint).0;
+    let quote_vault = get_vault_address(&market, &meta.quote_mint).0;
+    let accounts_to_snapshot = [market, base_vault, quote_vault, rent_recipient];
+    let instruction = || {
+        create_tombstone_market_and_close_vaults_instruction(
+            &admin.pubkey(),
+            &market,
+            &rent_recipient,
+            &meta.base_mint,
+            &meta.quote_mint,
+        )
+    };
+
+    let original_base_vault = corrupt_token_account_fields(
+        &mut program_context,
+        &sdk.client,
+        &base_vault,
+        Some(Pubkey::new_unique()),
+        None,
+    )
+    .await;
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        instruction(),
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+    program_context.set_account(
+        &base_vault,
+        &AccountSharedData::from(original_base_vault.clone()),
+    );
+    program_context.get_new_latest_blockhash().await.unwrap();
+
+    corrupt_token_account_fields(
+        &mut program_context,
+        &sdk.client,
+        &base_vault,
+        None,
+        Some(Pubkey::new_unique()),
+    )
+    .await;
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        instruction(),
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+    program_context.set_account(
+        &base_vault,
+        &AccountSharedData::from(original_base_vault.clone()),
+    );
+    program_context.get_new_latest_blockhash().await.unwrap();
+
+    let original_market = sdk.client.get_account(&market).await.unwrap();
+    let mut corrupted_market = original_market.clone();
+    {
+        let header =
+            MarketHeader::load_mut_bytes(&mut corrupted_market.data[..size_of::<MarketHeader>()])
+                .unwrap();
+        header.base_params.vault_key = Pubkey::new_unique();
+    }
+    program_context.set_account(&market, &AccountSharedData::from(corrupted_market));
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        instruction(),
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+    program_context.set_account(&market, &AccountSharedData::from(original_market.clone()));
+    program_context.get_new_latest_blockhash().await.unwrap();
+
+    let mut corrupted_market = original_market.clone();
+    {
+        let header =
+            MarketHeader::load_mut_bytes(&mut corrupted_market.data[..size_of::<MarketHeader>()])
+                .unwrap();
+        header.base_params.vault_bump ^= 1;
+    }
+    program_context.set_account(&market, &AccountSharedData::from(corrupted_market));
+    assert_instruction_failure_is_atomic(
+        &sdk.client,
+        instruction(),
+        vec![&admin],
+        &accounts_to_snapshot,
+    )
+    .await;
+    program_context.set_account(&market, &AccountSharedData::from(original_market));
 }
 
 async fn get_new_maker(
@@ -1593,6 +2068,21 @@ async fn test_phoenix_admin() {
         )
         .await
         .unwrap();
+
+    assert!(
+        sdk.client
+            .get_account(&get_vault_address(market, base_mint).0)
+            .await
+            .is_ok(),
+        "Legacy ChangeMarketStatus tombstone must not change vault behavior"
+    );
+    assert!(
+        sdk.client
+            .get_account(&get_vault_address(market, quote_mint).0)
+            .await
+            .is_ok(),
+        "Legacy ChangeMarketStatus tombstone must not change vault behavior"
+    );
 }
 
 #[tokio::test]

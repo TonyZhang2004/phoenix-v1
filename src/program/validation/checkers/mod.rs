@@ -6,6 +6,7 @@ use std::ops::Deref;
 
 pub mod phoenix_checkers;
 pub mod token_checkers;
+pub mod vault_checkers;
 
 pub use token_checkers::*;
 

@@ -228,6 +228,31 @@ pub fn create_change_market_status_instruction(
     }
 }
 
+pub fn create_tombstone_market_and_close_vaults_instruction(
+    authority: &Pubkey,
+    market: &Pubkey,
+    rent_recipient: &Pubkey,
+    base_mint: &Pubkey,
+    quote_mint: &Pubkey,
+) -> Instruction {
+    let (base_vault, _) = get_vault_address(market, base_mint);
+    let (quote_vault, _) = get_vault_address(market, quote_mint);
+    Instruction {
+        program_id: crate::id(),
+        accounts: vec![
+            AccountMeta::new_readonly(crate::id(), false),
+            AccountMeta::new_readonly(phoenix_log_authority::id(), false),
+            AccountMeta::new(*market, false),
+            AccountMeta::new_readonly(*authority, true),
+            AccountMeta::new(*rent_recipient, false),
+            AccountMeta::new(base_vault, false),
+            AccountMeta::new(quote_vault, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: PhoenixInstruction::TombstoneMarketAndCloseVaults.to_vec(),
+    }
+}
+
 pub fn create_request_seat_authorized_instruction(
     authority: &Pubkey,
     payer: &Pubkey,

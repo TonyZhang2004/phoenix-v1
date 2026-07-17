@@ -84,6 +84,31 @@ pub(crate) fn maybe_invoke_withdraw<'a, 'info>(
     Ok(())
 }
 
+pub(crate) fn close_market_vault<'a, 'info>(
+    market_key: &Pubkey,
+    mint_key: &Pubkey,
+    bump: u8,
+    token_program: &AccountInfo<'info>,
+    vault: &'a TokenAccountInfo<'a, 'info>,
+    rent_recipient: &AccountInfo<'info>,
+) -> ProgramResult {
+    invoke_signed(
+        &spl_token::instruction::close_account(
+            &spl_token::id(),
+            vault.key,
+            rent_recipient.key,
+            vault.key,
+            &[],
+        )?,
+        &[
+            token_program.clone(),
+            vault.as_ref().clone(),
+            rent_recipient.clone(),
+        ],
+        &[&[b"vault", market_key.as_ref(), mint_key.as_ref(), &[bump]]],
+    )
+}
+
 pub(crate) fn maybe_invoke_deposit<'a, 'info>(
     deposit_amount: u64,
     token_program: &AccountInfo<'info>,

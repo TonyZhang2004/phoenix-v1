@@ -1552,6 +1552,64 @@
         "type": "u8",
         "value": 110
       }
+    },
+    {
+      "name": "TombstoneMarketAndCloseVaults",
+      "accounts": [
+        {
+          "name": "phoenixProgram",
+          "isMut": false,
+          "isSigner": false,
+          "desc": "Phoenix program"
+        },
+        {
+          "name": "logAuthority",
+          "isMut": false,
+          "isSigner": false,
+          "desc": "Phoenix log authority"
+        },
+        {
+          "name": "market",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "This account holds the market state"
+        },
+        {
+          "name": "marketAuthority",
+          "isMut": false,
+          "isSigner": true,
+          "desc": "The market_authority account must sign to tombstone the market"
+        },
+        {
+          "name": "rentRecipient",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "Recipient of the market and vault account rent"
+        },
+        {
+          "name": "baseVault",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "Base vault PDA, seeds are [b'vault', market_address, base_mint_address]"
+        },
+        {
+          "name": "quoteVault",
+          "isMut": true,
+          "isSigner": false,
+          "desc": "Quote vault PDA, seeds are [b'vault', market_address, quote_mint_address]"
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false,
+          "desc": "Token program"
+        }
+      ],
+      "args": [],
+      "discriminant": {
+        "type": "u8",
+        "value": 111
+      }
     }
   ],
   "types": [
