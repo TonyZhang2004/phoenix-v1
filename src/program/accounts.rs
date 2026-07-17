@@ -170,6 +170,12 @@ impl Seat {
 // Always run tests before every deploy
 #[test]
 fn test_valid_discriminants() {
+    assert_eq!(std::mem::size_of::<Seat>(), 128);
+    assert_eq!(std::mem::offset_of!(Seat, discriminant), 0);
+    assert_eq!(std::mem::offset_of!(Seat, market), 8);
+    assert_eq!(std::mem::offset_of!(Seat, trader), 40);
+    assert_eq!(std::mem::offset_of!(Seat, approval_status), 72);
+    assert_eq!(std::mem::offset_of!(Seat, funding_key), 80);
     assert_eq!(
         std::any::type_name::<MarketHeader>(),
         "phoenix::program::accounts::MarketHeader"

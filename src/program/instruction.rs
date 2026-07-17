@@ -298,6 +298,9 @@ impl PhoenixInstruction {
 
 #[test]
 fn test_instruction_serialization() {
+    assert_eq!(PhoenixInstruction::DeleteSeat as u8, 110);
+    assert_eq!(PhoenixInstruction::TombstoneMarketAndCloseVaults as u8, 111);
+
     for i in 0..=111 {
         let instruction = match PhoenixInstruction::try_from(i) {
             Ok(j) => j,
