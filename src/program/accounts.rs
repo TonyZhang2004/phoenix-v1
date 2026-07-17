@@ -180,7 +180,7 @@ fn test_valid_discriminants() {
     );
     assert_eq!(
         get_discriminant::<MarketHeader>().unwrap(),
-        8167313896524341111
+        2998278101910841711
     );
-    assert_eq!(get_discriminant::<Seat>().unwrap(), 2002603505298356104);
+    assert_eq!(get_discriminant::<Seat>().unwrap(), 11823696334297479388);
 }

@@ -54,7 +54,7 @@ security_txt! {
     auditors: "contact@osec.io"
 }
 
-declare_id!("PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY");
+declare_id!("phNX2ZY31wq9NCXMfY9ptouoqB3Mor8oe3QE96V6QKn");
 
 /// This is a static PDA with seeds: [b"log"]
 /// If the program id changes, this will also need to be updated
@@ -64,11 +64,11 @@ pub mod phoenix_log_authority {
     use solana_program::pubkey::Pubkey;
 
     // This creates a static PDA with seeds: [b"log"]
-    // The address of the PDA is 7aDTsspkQNGKmrexAN7FLx9oxU3iPczSSvHNggyuqYkR
+    // The address of the PDA is EfFea4AJmxJ9P9DRGjewGoQrCbaZErZfein2qDEAUpv8
     // The bump seed is stored in a variable called bump()
     declare_pda!(
-        "7aDTsspkQNGKmrexAN7FLx9oxU3iPczSSvHNggyuqYkR",
-        "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY",
+        "EfFea4AJmxJ9P9DRGjewGoQrCbaZErZfein2qDEAUpv8",
+        "phNX2ZY31wq9NCXMfY9ptouoqB3Mor8oe3QE96V6QKn",
         "log"
     );
 

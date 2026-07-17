@@ -12,9 +12,9 @@ use phoenix::program::MarketHeader;
 use phoenix::quantities::Ticks;
 use phoenix::quantities::WrapperU64;
 use phoenix::quantities::{BaseLots, QuoteLots};
-use phoenix_sdk::sdk_client::MarketEventDetails;
 use phoenix_sdk::sdk_client::MarketMetadata;
 use phoenix_sdk::sdk_client::Reduce;
+use phoenix_sdk::sdk_client::{MarketEventDetails, PhoenixEvent};
 use sokoban::ZeroCopy;
 use solana_program::instruction::AccountMeta;
 use solana_program::instruction::Instruction;
@@ -32,13 +32,48 @@ use phoenix::state::*;
 use phoenix_sdk::sdk_client::SDKClient;
 
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::{Keypair, Signature, Signer};
 
 pub mod helpers;
 use crate::helpers::*;
 
 const BOOK_SIZE: usize = 4096;
 const NUM_SEATS: usize = 8193;
+
+async fn parse_events_from_transaction(
+    sdk: &SDKClient,
+    signature: &Signature,
+) -> Option<Vec<PhoenixEvent>> {
+    let transaction = sdk.client.get_transaction(signature).await.ok()?;
+    if transaction.is_err {
+        return None;
+    }
+
+    let signature = transaction.signature.parse().ok()?;
+    let program_id = phoenix::id().to_string();
+    let mut event_batches = Vec::new();
+
+    for inner_instructions in &transaction.inner_instructions {
+        for inner_instruction in inner_instructions {
+            let instruction = &inner_instruction.instruction;
+            if instruction.program_id != program_id {
+                continue;
+            }
+
+            let Some((tag, data)) = instruction.data.split_first() else {
+                continue;
+            };
+            if *tag == PhoenixInstruction::Log as u8 {
+                event_batches.push(data.to_vec());
+            }
+        }
+    }
+
+    let raw_events = sdk
+        .core
+        .parse_raw_phoenix_events(&signature, event_batches)?;
+    sdk.parse_raw_phoenix_events(raw_events).await
+}
 
 #[test]
 fn test_delete_seat_builder_abi() {
@@ -2208,7 +2243,7 @@ async fn test_phoenix_basic() {
         .await
         .unwrap();
 
-    let tx_events = sdk.parse_events_from_transaction(&sig).await.unwrap();
+    let tx_events = parse_events_from_transaction(sdk, &sig).await.unwrap();
     for event in tx_events {
         if let MarketEventDetails::Reduce(Reduce {
             order_sequence_number,
@@ -2521,7 +2556,7 @@ async fn test_phoenix_cancel_with_free_funds() {
         .await
         .unwrap();
 
-    let tx_events = sdk.parse_events_from_transaction(&sig).await.unwrap();
+    let tx_events = parse_events_from_transaction(sdk, &sig).await.unwrap();
     for event in tx_events {
         if let MarketEventDetails::Reduce(Reduce {
             order_sequence_number,
@@ -3796,7 +3831,12 @@ async fn test_phoenix_cancel_all_memory_management() {
     )
     .await;
 
-    let ix = sdk.get_cancel_all_ix(market).unwrap();
+    let ix = create_cancel_all_orders_instruction(
+        market,
+        &default_maker.user.pubkey(),
+        &meta.base_mint,
+        &meta.quote_mint,
+    );
     sdk.client
         .sign_send_instructions(
             vec![
@@ -4337,7 +4377,12 @@ async fn test_phoenix_place_order_quiet_failure() {
     println!("Cancelling all orders");
     sdk.client
         .sign_send_instructions(
-            vec![sdk.get_cancel_all_ix(market).unwrap()],
+            vec![create_cancel_all_orders_instruction(
+                market,
+                &maker.user.pubkey(),
+                base_mint,
+                quote_mint,
+            )],
             vec![&maker.user],
         )
         .await
@@ -4493,7 +4538,12 @@ async fn test_phoenix_place_order_quiet_failure() {
     println!("Cancelling all orders");
     sdk.client
         .sign_send_instructions(
-            vec![sdk.get_cancel_all_ix(market).unwrap()],
+            vec![create_cancel_all_orders_instruction(
+                market,
+                &maker.user.pubkey(),
+                base_mint,
+                quote_mint,
+            )],
             vec![&maker.user],
         )
         .await
